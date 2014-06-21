@@ -108,109 +108,114 @@ func main() {
 		if err != nil {
 			log.Println("error reading packet: ", err)
 			return
-		} else if addr.String() == dstip.String() {
-			// Decode a packet
-			//packet := gopacket.NewPacket(b[:n], layers.LayerTypeTCP, gopacket.Default)
-			packet := gopacket.NewPacket(b[:n], layers.LayerTypeIPv4, gopacket.Default)
+		}
 
-			//fmt.Println(packet.Dump())
+		if addr.String() != dstip.String() {
+			/* Packet did not come from the server */
+			continue
+		}
 
-			//fmt.Printf("networkLayer: %#v\n", packet.NetworkLayer())
-			//fmt.Printf("transportLayer: %#v\n", packet.TransportLayer())
+		// Decode a packet
+		//packet := gopacket.NewPacket(b[:n], layers.LayerTypeTCP, gopacket.Default)
+		packet := gopacket.NewPacket(b[:n], layers.LayerTypeIPv4, gopacket.Default)
 
-			//log.Fatalln("sdfsd")
+		//fmt.Println(packet.Dump())
 
-			// Get the TCP layer from this packet
-			if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		//fmt.Printf("networkLayer: %#v\n", packet.NetworkLayer())
+		//fmt.Printf("transportLayer: %#v\n", packet.TransportLayer())
 
-				//ipLayer := packet.Layer(layers.LayerTypeIPv4)
-				ipLayer := packet.NetworkLayer()
-				ipv4, _ := ipLayer.(*layers.IPv4)
+		//log.Fatalln("sdfsd")
 
-				// fmt.Printf("%#v\n", ipv4)
+		// Get the TCP layer from this packet
+		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 
-				tcp, _ := tcpLayer.(*layers.TCP)
+		if tcpLayer == nil {
+			log.Println("Could not find tcp layer, icmp?")
+			continue
+		}
 
-				//fmt.Printf("ipLayer %#v\n", ipLayer)
-				//fmt.Printf("ipv4 %#v\n", ipv4)
-				//fmt.Printf("tcp %#v\n", tcp)
+		//ipLayer := packet.Layer(layers.LayerTypeIPv4)
+		ipLayer := packet.NetworkLayer()
+		ipv4, _ := ipLayer.(*layers.IPv4)
 
-				// I don't know what this exact if statement excludes
-				// probably random packets from the internet (or all packets?)?
-				if tcp.DstPort == srcport {
+		// fmt.Printf("%#v\n", ipv4)
 
-					// data legnth is ipv4 header minus tcp header
-					length := ipv4.Length - uint16(ipv4.IHL)*4 - uint16(tcp.DataOffset)*4
+		tcp, _ := tcpLayer.(*layers.TCP)
 
-					log.Printf("Received packet, seq: %d, syn: %v, ack %v, ipv4.length: %d, dataoffset: %d, length: %d, checksum %d\n", tcp.Seq, tcp.SYN, tcp.ACK, ipv4.Length, tcp.DataOffset, length, tcp.Checksum)
+		//fmt.Printf("ipLayer %#v\n", ipLayer)
+		//fmt.Printf("ipv4 %#v\n", ipv4)
+		//fmt.Printf("tcp %#v\n", tcp)
 
-					if tcp.SYN && tcp.ACK {
-						synAckRTTms := time.Since(synSentTime).Nanoseconds() / 1000 / 1000
-						log.Printf("Port %d is OPEN (%d %d) ms: %d\n", dstport, tcp.DstPort, tcp.SrcPort, synAckRTTms)
+		if tcp.DstPort != srcport {
+			// Exclude packets not related to this connection (correct ip, wrong port)
+			continue
+		}
 
-						nextRemoteSeq = tcp.Seq + 1
+		// data legnth is ipv4 header minus tcp header
+		length := ipv4.Length - uint16(ipv4.IHL)*4 - uint16(tcp.DataOffset)*4
 
-						libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
-						libsn.SendHTTP(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, remoteHost)
+		log.Printf("Received packet, seq: %d, syn: %v, ack %v, ipv4.length: %d, dataoffset: %d, length: %d, checksum %d\n", tcp.Seq, tcp.SYN, tcp.ACK, ipv4.Length, tcp.DataOffset, length, tcp.Checksum)
 
-						_ = time.AfterFunc(time.Duration(synAckRTTms*2)*time.Millisecond, func() {
-							// TODO make this a hook
-							log.Println("Counted")
-						})
-					} else if tcp.FIN {
-						log.Printf("Received FIN %d packet\n", dstport)
-						libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
-						libsn.CloseConnection(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, nextRemoteSeq)
-					} else if tcp.RST {
-						log.Printf("Received RST %d packet\n", dstport)
-					} else if tcp.ACK && length == 0 {
-						log.Printf("Received ACK %d packet\n", dstport)
-					} else {
+		if tcp.SYN && tcp.ACK {
+			synAckRTTms := time.Since(synSentTime).Nanoseconds() / 1000 / 1000
+			log.Printf("Port %d is OPEN (%d %d) ms: %d\n", dstport, tcp.DstPort, tcp.SrcPort, synAckRTTms)
 
-						// To figure out the initial congestion window, we could just create
-						// a map[string]uint8, key on seq and incr each time. Then we can count
-						// keys to know how many packets we recieved in initcwnd.
-						// After a few moments, we could then ack everthing and handle a
-						// connection close.
-						//
-						// Although this doesn't handle missing packets.
+			nextRemoteSeq = tcp.Seq + 1
 
-						// Incorrectly detects a retrainsmission when the payload was 0 bytes
-						// i.e. just an ack packet.
-						// May also have an issue with out of order packets
-						if tcp.Seq >= nextRemoteSeq {
-							if tcp.Seq > nextRemoteSeq {
-								// We could handle this better by buffering the packets
-								log.Printf("Received out of order packets, got seq %d, expected %d", tcp.Seq, nextRemoteSeq)
-							}
+			libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
+			libsn.SendHTTP(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, remoteHost)
 
-							// Calculate the next sequence number we expect
-							nextRemoteSeq := tcp.Seq + 1
-							if length > 0 {
-								nextRemoteSeq = tcp.Seq + uint32(length)
-							}
-
-							// Ack out of order packets, this is wrong, we shouldn't ack until
-							// we've received everything in order.
-							libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
-
-							dataPacketsReceived++
-							log.Printf("Received other packet, seq: %d, nextRemote: %d, length: %d, cnt: %d\n", tcp.Seq, nextRemoteSeq, length, dataPacketsReceived)
-						} else {
-							if !retransmitting {
-								retransmitting = true
-								log.Printf("Remote end has started retransmitting, we received: %d\n", dataPacketsReceived)
-								//closeConnection(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, nextRemoteSeq)
-							}
-							log.Printf("Discarding retransmitted packet, seq: %d\n", tcp.Seq)
-						}
-					}
-					//return
-				}
-			}
+			_ = time.AfterFunc(time.Duration(synAckRTTms*2)*time.Millisecond, func() {
+				// TODO make this a hook
+				log.Println("Counted")
+			})
+		} else if tcp.FIN {
+			log.Printf("Received FIN %d packet\n", dstport)
+			libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
+			libsn.CloseConnection(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, nextRemoteSeq)
+		} else if tcp.RST {
+			log.Printf("Received RST %d packet\n", dstport)
+		} else if tcp.ACK && length == 0 {
+			log.Printf("Received ACK %d packet\n", dstport)
 		} else {
-			//log.Printf("Src string %s dont match dst sting %s", addr.String(), dstip.String())
+
+			// To figure out the initial congestion window, we could just create
+			// a map[string]uint8, key on seq and incr each time. Then we can count
+			// keys to know how many packets we recieved in initcwnd.
+			// After a few moments, we could then ack everthing and handle a
+			// connection close.
+			//
+			// Although this doesn't handle missing packets.
+
+			// Incorrectly detects a retrainsmission when the payload was 0 bytes
+			// i.e. just an ack packet.
+			// May also have an issue with out of order packets
+			if tcp.Seq >= nextRemoteSeq {
+				if tcp.Seq > nextRemoteSeq {
+					// We could handle this better by buffering the packets
+					log.Printf("Received out of order packets, got seq %d, expected %d", tcp.Seq, nextRemoteSeq)
+				}
+
+				// Calculate the next sequence number we expect
+				nextRemoteSeq := tcp.Seq + 1
+				if length > 0 {
+					nextRemoteSeq = tcp.Seq + uint32(length)
+				}
+
+				// Ack out of order packets, this is wrong, we shouldn't ack until
+				// we've received everything in order.
+				libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
+
+				dataPacketsReceived++
+				log.Printf("Received other packet, seq: %d, nextRemote: %d, length: %d, cnt: %d\n", tcp.Seq, nextRemoteSeq, length, dataPacketsReceived)
+			} else {
+				if !retransmitting {
+					retransmitting = true
+					log.Printf("Remote end has started retransmitting, we received: %d\n", dataPacketsReceived)
+					//closeConnection(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, nextRemoteSeq)
+				}
+				log.Printf("Discarding retransmitted packet, seq: %d\n", tcp.Seq)
+			}
 		}
 	}
-
 }
