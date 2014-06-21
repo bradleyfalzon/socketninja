@@ -1,14 +1,15 @@
 package main
 
 import (
-	"code.google.com/p/gopacket"
-	"code.google.com/p/gopacket/layers"
 	"flag"
 	"log"
 	"net"
 	"strconv"
 	"strings"
 	"time"
+
+	"code.google.com/p/gopacket"
+	"code.google.com/p/gopacket/layers"
 )
 
 // get the local ip and port based on our destination ip
@@ -16,24 +17,28 @@ func localIPPort(dstip net.IP) (net.IP, int) {
 
 	// using port 443 just to assist tcpdump ignoring this initial connection
 	// usually it should be port 80
-	serverAddr, err := net.ResolveTCPAddr("tcp", dstip.String()+":443")
+	remoteDial := dstip.String() + ":443"
+
+	serverAddr, err := net.ResolveTCPAddr("tcp", remoteDial)
 	if err != nil {
-		log.Fatalln("Failed to lookup: ", err)
+		log.Fatalf("Failed to lookup %s: %s", remoteDial, err)
 	}
 
 	// We don't actually connect to anything, but we can determine
 	// based on our destination ip what source ip we should use.
 
-	if con, err := net.DialTCP("tcp", nil, serverAddr); err == nil {
-		if tcpaddr, ok := con.LocalAddr().(*net.TCPAddr); ok {
-			// assume the next tcp port is suitable for use on the next connection
-			return tcpaddr.IP, tcpaddr.Port + 1
-		}
-		log.Fatalln("couldn't get here")
+	con, err := net.DialTCP("tcp", nil, serverAddr)
+	if err != nil {
+		log.Fatalln("Could not get local ip when connecting to host %s: ", remoteDial, err)
 	}
 
-	log.Fatalln("could not get local ip: ", err)
-	return nil, -1
+	if tcpaddr, ok := con.LocalAddr().(*net.TCPAddr); ok {
+		// assume the next tcp port is suitable for use on the next connection
+		return tcpaddr.IP, tcpaddr.Port + 1
+	}
+	log.Fatalf("Couldn't connect to %s", remoteDial)
+	return nil, 0
+
 }
 
 type SrcDst struct {
@@ -80,7 +85,9 @@ func newPacketBuf(sd SrcDst) gopacket.SerializeBuffer {
 		tcp.Options = append(tcp.Options, layers.TCPOption{OptionType: 2, OptionLength: 4, OptionData: sd.MSS})
 	}
 
-	log.Printf("TCP Options: %s", tcp.Options)
+	if len(tcp.Options) > 0 {
+		log.Printf("TCP Options: %s", tcp.Options)
+	}
 
 	// Serialize.  Note:  we only serialize the TCP layer, because the
 	// socket we get with net.ListenPacket wraps our data in IPv4 packets
