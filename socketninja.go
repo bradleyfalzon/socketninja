@@ -95,6 +95,8 @@ func main() {
 		log.Fatalln("SetDeadline Error", err)
 	}
 
+	receiveBuffer := make(map[uint32]*layers.TCP)
+
 	for {
 		b := make([]byte, 4096)
 		oob := make([]byte, 4096)
@@ -165,9 +167,9 @@ func main() {
 			libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
 			libsn.SendHTTP(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, remoteHost)
 
-			_ = time.AfterFunc(time.Duration(synAckRTTms*2)*time.Millisecond, func() {
+			_ = time.AfterFunc(time.Duration(float64(synAckRTTms)*1.5)*time.Millisecond, func() {
 				// TODO make this a hook
-				log.Println("Counted")
+				log.Printf("Counted %d\n", dataPacketsReceived)
 			})
 		} else if tcp.FIN {
 			log.Printf("Received FIN %d packet\n", dstport)
@@ -187,27 +189,40 @@ func main() {
 			//
 			// Although this doesn't handle missing packets.
 
-			// Incorrectly detects a retrainsmission when the payload was 0 bytes
+			// Incorrectly detects a retransmission when the payload was 0 bytes
 			// i.e. just an ack packet.
 			// May also have an issue with out of order packets
 			if tcp.Seq >= nextRemoteSeq {
-				if tcp.Seq > nextRemoteSeq {
-					// We could handle this better by buffering the packets
-					log.Printf("Received out of order packets, got seq %d, expected %d", tcp.Seq, nextRemoteSeq)
-				}
-
-				// Calculate the next sequence number we expect
-				nextRemoteSeq := tcp.Seq + 1
-				if length > 0 {
-					nextRemoteSeq = tcp.Seq + uint32(length)
-				}
-
-				// Ack out of order packets, this is wrong, we shouldn't ack until
-				// we've received everything in order.
-				libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *tcp, length)
-
 				dataPacketsReceived++
-				log.Printf("Received other packet, seq: %d, nextRemote: %d, length: %d, cnt: %d\n", tcp.Seq, nextRemoteSeq, length, dataPacketsReceived)
+				receiveBuffer[tcp.Seq] = tcp
+
+				if tcp.Seq > nextRemoteSeq {
+					log.Printf("Received out of order packet, got seq %d, expected %d", tcp.Seq, nextRemoteSeq)
+					continue
+				}
+
+				// Process all packets, including those previously buffered
+				// because they were out of order.
+				for {
+
+					pkt, ok := receiveBuffer[nextRemoteSeq]
+
+					if !ok {
+						break
+					}
+					delete(receiveBuffer, nextRemoteSeq)
+
+					// Calculate the next sequence number we expect
+					nextRemoteSeq = pkt.Seq + 1
+					if length > 0 {
+						nextRemoteSeq = pkt.Seq + uint32(length)
+					}
+
+					libsn.AckPacket(conn, ipv4.SrcIP, ipv4.DstIP, *pkt, length)
+
+				}
+
+				//log.Printf("Received data packet, seq: %d, nextRemote: %d, length: %d, cnt: %d\n", tcp.Seq, nextRemoteSeq, length, dataPacketsReceived)
 			} else {
 				if !retransmitting {
 					retransmitting = true

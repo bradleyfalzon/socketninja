@@ -150,10 +150,11 @@ func SendHTTP(conn *net.IPConn, SrcIP net.IP, DstIP net.IP, tcp layers.TCP, remo
 	ack := tcp.Seq + 1
 	//payload := []byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n\r\n", remoteHost))
 	headers := []string{
-		"GET /resources/css/fonts/NewsGothicMT.css HTTP/1.1", // small
+		//"GET /resources/css/fonts/NewsGothicMT.css HTTP/1.1", // small
 		//"GET /resources/libraries/plugins/jquery.scrollTo-1.4.3.1.js HTTP/1.1", // 3.4kB
 		//"GET /resources/libraries/bootstrap/js/bootstrap.min.js HTTP/1.1", // 7.7kB
 		//"GET /resources/css/v3/vehicles.css HTTP/1.1", // 10.7kB
+		"GET / HTTP/1.1", // lots
 		"Host: " + remoteHost,
 		"Connection: Keep-Alive",
 	}
